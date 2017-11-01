@@ -18,10 +18,11 @@
 
 #include <atomic>
 #include <utils/misc.h>
-#include <hwbinder/BpBinder.h>
+#include <hwbinder/BpHwBinder.h>
 #include <hwbinder/IInterface.h>
 #include <hwbinder/Parcel.h>
 
+#include <sched.h>
 #include <stdio.h>
 
 namespace android {
@@ -40,17 +41,12 @@ IBinder::~IBinder()
 
 // ---------------------------------------------------------------------------
 
-sp<IInterface>  IBinder::queryLocalInterface(const String16& /*descriptor*/)
+BHwBinder* IBinder::localBinder()
 {
     return NULL;
 }
 
-BBinder* IBinder::localBinder()
-{
-    return NULL;
-}
-
-BpBinder* IBinder::remoteBinder()
+BpHwBinder* IBinder::remoteBinder()
 {
     return NULL;
 }
@@ -62,52 +58,34 @@ bool IBinder::checkSubclass(const void* /*subclassID*/) const
 
 // ---------------------------------------------------------------------------
 
-class BBinder::Extras
+class BHwBinder::Extras
 {
 public:
     Mutex mLock;
-    BpBinder::ObjectManager mObjects;
+    BpHwBinder::ObjectManager mObjects;
 };
 
 // ---------------------------------------------------------------------------
 
-BBinder::BBinder() : mExtras(nullptr)
+BHwBinder::BHwBinder() : mSchedPolicy(SCHED_NORMAL), mSchedPriority(0), mExtras(nullptr)
 {
 }
 
-bool BBinder::isBinderAlive() const
-{
-    return true;
+int BHwBinder::getMinSchedulingPolicy() {
+    return mSchedPolicy;
 }
 
-status_t BBinder::pingBinder()
-{
-    return NO_ERROR;
+int BHwBinder::getMinSchedulingPriority() {
+    return mSchedPriority;
 }
 
-const String16& BBinder::getInterfaceDescriptor() const
-{
-    // This is a local static rather than a global static,
-    // to avoid static initializer ordering issues.
-    static String16 sEmptyDescriptor;
-    ALOGW("reached BBinder::getInterfaceDescriptor (this=%p)", this);
-    return sEmptyDescriptor;
-}
-
-status_t BBinder::transact(
+status_t BHwBinder::transact(
     uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags, TransactCallback callback)
 {
     data.setDataPosition(0);
 
     status_t err = NO_ERROR;
     switch (code) {
-        case PING_TRANSACTION:
-            reply->writeInt32(pingBinder());
-            reply->setDataPosition(0);
-            if (callback != NULL) {
-                callback(*reply);
-            }
-            break;
         default:
             err = onTransact(code, data, reply, flags,
                     [&](auto &replyParcel) {
@@ -122,26 +100,21 @@ status_t BBinder::transact(
     return err;
 }
 
-status_t BBinder::linkToDeath(
+status_t BHwBinder::linkToDeath(
     const sp<DeathRecipient>& /*recipient*/, void* /*cookie*/,
     uint32_t /*flags*/)
 {
     return INVALID_OPERATION;
 }
 
-status_t BBinder::unlinkToDeath(
+status_t BHwBinder::unlinkToDeath(
     const wp<DeathRecipient>& /*recipient*/, void* /*cookie*/,
     uint32_t /*flags*/, wp<DeathRecipient>* /*outRecipient*/)
 {
     return INVALID_OPERATION;
 }
 
-status_t BBinder::dump(int /*fd*/, const Vector<String16>& /*args*/)
-{
-    return NO_ERROR;
-}
-
-void BBinder::attachObject(
+void BHwBinder::attachObject(
     const void* objectID, void* object, void* cleanupCookie,
     object_cleanup_func func)
 {
@@ -163,7 +136,7 @@ void BBinder::attachObject(
     e->mObjects.attach(objectID, object, cleanupCookie, func);
 }
 
-void* BBinder::findObject(const void* objectID) const
+void* BHwBinder::findObject(const void* objectID) const
 {
     Extras* e = mExtras.load(std::memory_order_acquire);
     if (!e) return NULL;
@@ -172,7 +145,7 @@ void* BBinder::findObject(const void* objectID) const
     return e->mObjects.find(objectID);
 }
 
-void BBinder::detachObject(const void* objectID)
+void BHwBinder::detachObject(const void* objectID)
 {
     Extras* e = mExtras.load(std::memory_order_acquire);
     if (!e) return;
@@ -181,94 +154,66 @@ void BBinder::detachObject(const void* objectID)
     e->mObjects.detach(objectID);
 }
 
-BBinder* BBinder::localBinder()
+BHwBinder* BHwBinder::localBinder()
 {
     return this;
 }
 
-BBinder::~BBinder()
+BHwBinder::~BHwBinder()
 {
     Extras* e = mExtras.load(std::memory_order_relaxed);
     if (e) delete e;
 }
 
 
-status_t BBinder::onTransact(
-    uint32_t code, const Parcel& data, Parcel* reply, uint32_t /*flags*/, TransactCallback callback)
+status_t BHwBinder::onTransact(
+    uint32_t /*code*/, const Parcel& /*data*/, Parcel* /*reply*/, uint32_t /*flags*/,
+    TransactCallback /*callback*/)
 {
-    switch (code) {
-        case INTERFACE_TRANSACTION:
-            reply->writeString16(getInterfaceDescriptor());
-            if (callback != NULL) {
-                callback(*reply);
-            }
-            return NO_ERROR;
-
-        case DUMP_TRANSACTION: {
-            int fd = data.readFileDescriptor();
-            int argc = data.readInt32();
-            Vector<String16> args;
-            for (int i = 0; i < argc && data.dataAvail() > 0; i++) {
-               args.add(data.readString16());
-            }
-            return dump(fd, args);
-        }
-
-        case SYSPROPS_TRANSACTION: {
-            report_sysprop_change();
-            return NO_ERROR;
-        }
-
-        default:
-            return UNKNOWN_TRANSACTION;
-    }
+    return UNKNOWN_TRANSACTION;
 }
 
 // ---------------------------------------------------------------------------
 
 enum {
     // This is used to transfer ownership of the remote binder from
-    // the BpRefBase object holding it (when it is constructed), to the
-    // owner of the BpRefBase object when it first acquires that BpRefBase.
+    // the BpHwRefBase object holding it (when it is constructed), to the
+    // owner of the BpHwRefBase object when it first acquires that BpHwRefBase.
     kRemoteAcquired = 0x00000001
 };
 
-BpRefBase::BpRefBase(const sp<IBinder>& o)
+BpHwRefBase::BpHwRefBase(const sp<IBinder>& o)
     : mRemote(o.get()), mRefs(NULL), mState(0)
 {
-    extendObjectLifetime(OBJECT_LIFETIME_WEAK);
-
     if (mRemote) {
         mRemote->incStrong(this);           // Removed on first IncStrong().
-        mRefs = mRemote->createWeak(this);  // Held for our entire lifetime.
     }
 }
 
-BpRefBase::~BpRefBase()
+BpHwRefBase::~BpHwRefBase()
 {
     if (mRemote) {
         if (!(mState.load(std::memory_order_relaxed)&kRemoteAcquired)) {
             mRemote->decStrong(this);
         }
-        mRefs->decWeak(this);
     }
 }
 
-void BpRefBase::onFirstRef()
+void BpHwRefBase::onFirstRef()
 {
     mState.fetch_or(kRemoteAcquired, std::memory_order_relaxed);
 }
 
-void BpRefBase::onLastStrongRef(const void* /*id*/)
+void BpHwRefBase::onLastStrongRef(const void* /*id*/)
 {
     if (mRemote) {
         mRemote->decStrong(this);
     }
 }
 
-bool BpRefBase::onIncStrongAttempted(uint32_t /*flags*/, const void* /*id*/)
+bool BpHwRefBase::onIncStrongAttempted(uint32_t /*flags*/, const void* /*id*/)
 {
-    return mRemote ? mRefs->attemptIncStrong(this) : false;
+    return false;
 }
 
 // ---------------------------------------------------------------------------

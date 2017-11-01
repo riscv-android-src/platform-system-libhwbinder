@@ -25,15 +25,10 @@
 namespace android {
 namespace hardware {
 
-class BBinder : public IBinder
+class BHwBinder : public IBinder
 {
 public:
-                        BBinder();
-
-    virtual const String16& getInterfaceDescriptor() const;
-    virtual bool        isBinderAlive() const;
-    virtual status_t    pingBinder();
-    virtual status_t    dump(int fd, const Vector<String16>& args);
+                        BHwBinder();
 
     virtual status_t    transact(   uint32_t code,
                                     const Parcel& data,
@@ -57,20 +52,24 @@ public:
     virtual void*       findObject(const void* objectID) const;
     virtual void        detachObject(const void* objectID);
 
-    virtual BBinder*    localBinder();
+    virtual BHwBinder*    localBinder();
 
+    int                 getMinSchedulingPolicy();
+    int                 getMinSchedulingPriority();
 protected:
-    virtual             ~BBinder();
+    virtual             ~BHwBinder();
 
     virtual status_t    onTransact( uint32_t code,
                                     const Parcel& data,
                                     Parcel* reply,
                                     uint32_t flags = 0,
                                     TransactCallback callback = nullptr);
-
+    int                 mSchedPolicy; // policy to run transaction from this node at
+    // priority [-20..19] for SCHED_NORMAL, [1..99] for SCHED_FIFO/RT
+    int                 mSchedPriority;
 private:
-                        BBinder(const BBinder& o);
-            BBinder&    operator=(const BBinder& o);
+                        BHwBinder(const BHwBinder& o);
+            BHwBinder&    operator=(const BHwBinder& o);
 
     class Extras;
 
@@ -80,21 +79,20 @@ private:
 
 // ---------------------------------------------------------------------------
 
-class BpRefBase : public virtual RefBase
+class BpHwRefBase : public virtual RefBase
 {
 protected:
-                            BpRefBase(const sp<IBinder>& o);
-    virtual                 ~BpRefBase();
+                            BpHwRefBase(const sp<IBinder>& o);
+    virtual                 ~BpHwRefBase();
     virtual void            onFirstRef();
     virtual void            onLastStrongRef(const void* id);
     virtual bool            onIncStrongAttempted(uint32_t flags, const void* id);
 
-    inline  IBinder*        remote()                { return mRemote; }
     inline  IBinder*        remote() const          { return mRemote; }
 
 private:
-                            BpRefBase(const BpRefBase& o);
-    BpRefBase&              operator=(const BpRefBase& o);
+                            BpHwRefBase(const BpHwRefBase& o);
+    BpHwRefBase&              operator=(const BpHwRefBase& o);
 
     IBinder* const          mRemote;
     RefBase::weakref_type*  mRefs;

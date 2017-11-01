@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "ProcessState"
+#define LOG_TAG "hw-ProcessState"
 
 #include <hwbinder/ProcessState.h>
 
-#include <utils/Atomic.h>
-#include <hwbinder/BpBinder.h>
+#include <hwbinder/BpHwBinder.h>
 #include <hwbinder/IPCThreadState.h>
+#include <hwbinder/binder_kernel.h>
+#include <utils/Atomic.h>
 #include <utils/Log.h>
-#include <utils/String8.h>
 #include <utils/String8.h>
 #include <utils/threads.h>
 
@@ -39,7 +39,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define BINDER_VM_SIZE ((1*1024*1024) - (4096 *2))
+#define BINDER_VM_SIZE ((1 * 1024 * 1024) - sysconf(_SC_PAGE_SIZE) * 2)
 #define DEFAULT_MAX_BINDER_THREADS 0
 
 // -------------------------------------------------------------------------
@@ -54,14 +54,14 @@ public:
         : mIsMain(isMain)
     {
     }
-    
+
 protected:
     virtual bool threadLoop()
     {
         IPCThreadState::self()->joinThreadPool(mIsMain);
         return false;
     }
-    
+
     const bool mIsMain;
 };
 
@@ -72,6 +72,11 @@ sp<ProcessState> ProcessState::self()
         return gProcess;
     }
     gProcess = new ProcessState;
+    return gProcess;
+}
+
+sp<ProcessState> ProcessState::selfOrNull() {
+    Mutex::Autolock _l(gProcessMutex);
     return gProcess;
 }
 
@@ -97,9 +102,9 @@ sp<IBinder> ProcessState::getContextObject(const String16& name, const sp<IBinde
     sp<IBinder> object(
         mContexts.indexOfKey(name) >= 0 ? mContexts.valueFor(name) : NULL);
     mLock.unlock();
-    
+
     //printf("Getting context object %s for %p\n", String8(name).string(), caller.get());
-    
+
     if (object != NULL) return object;
 
     // Don't attempt to retrieve contexts if we manage them
@@ -108,7 +113,7 @@ sp<IBinder> ProcessState::getContextObject(const String16& name, const sp<IBinde
             String8(name).string());
         return NULL;
     }
-    
+
     IPCThreadState* ipc = IPCThreadState::self();
     {
         Parcel data, reply;
@@ -120,9 +125,9 @@ sp<IBinder> ProcessState::getContextObject(const String16& name, const sp<IBinde
             object = reply.readStrongBinder();
         }
     }
-    
+
     ipc->flushCommands();
-    
+
     if (object != NULL) setContextObject(object, name);
     return object;
 }
@@ -163,6 +168,34 @@ bool ProcessState::becomeContextManager(context_check_func checkFunc, void* user
     return mManagesContexts;
 }
 
+// Get references to userspace objects held by the kernel binder driver
+// Writes up to count elements into buf, and returns the total number
+// of references the kernel has, which may be larger than count.
+// buf may be NULL if count is 0.  The pointers returned by this method
+// should only be used for debugging and not dereferenced, they may
+// already be invalid.
+ssize_t ProcessState::getKernelReferences(size_t buf_count, uintptr_t* buf) {
+    binder_node_debug_info info = {};
+
+    uintptr_t* end = buf ? buf + buf_count : NULL;
+    size_t count = 0;
+
+    do {
+        status_t result = ioctl(mDriverFD, BINDER_GET_NODE_DEBUG_INFO, &info);
+        if (result < 0) {
+            return -1;
+        }
+        if (info.ptr != 0) {
+            if (buf && buf < end) *buf++ = info.ptr;
+            count++;
+            if (buf && buf < end) *buf++ = info.cookie;
+            count++;
+        }
+    } while (info.ptr != 0);
+
+    return count;
+}
+
 ProcessState::handle_entry* ProcessState::lookupHandleLocked(int32_t handle)
 {
     const size_t N=mHandleToObject.size();
@@ -185,39 +218,12 @@ sp<IBinder> ProcessState::getStrongProxyForHandle(int32_t handle)
     handle_entry* e = lookupHandleLocked(handle);
 
     if (e != NULL) {
-        // We need to create a new BpBinder if there isn't currently one, OR we
+        // We need to create a new BpHwBinder if there isn't currently one, OR we
         // are unable to acquire a weak reference on this current one.  See comment
         // in getWeakProxyForHandle() for more info about this.
         IBinder* b = e->binder;
         if (b == NULL || !e->refs->attemptIncWeak(this)) {
-            if (handle == 0) {
-                // Special case for context manager...
-                // The context manager is the only object for which we create
-                // a BpBinder proxy without already holding a reference.
-                // Perform a dummy transaction to ensure the context manager
-                // is registered before we create the first local reference
-                // to it (which will occur when creating the BpBinder).
-                // If a local reference is created for the BpBinder when the
-                // context manager is not present, the driver will fail to
-                // provide a reference to the context manager, but the
-                // driver API does not return status.
-                //
-                // Note that this is not race-free if the context manager
-                // dies while this code runs.
-                //
-                // TODO: add a driver API to wait for context manager, or
-                // stop special casing handle 0 for context manager and add
-                // a driver API to get a handle to the context manager with
-                // proper reference counting.
-
-                Parcel data;
-                status_t status = IPCThreadState::self()->transact(
-                        0, IBinder::PING_TRANSACTION, data, NULL, 0);
-                if (status == DEAD_OBJECT)
-                   return NULL;
-            }
-
-            b = new BpBinder(handle); 
+            b = new BpHwBinder(handle);
             e->binder = b;
             if (b) e->refs = b->getWeakRefs();
             result = b;
@@ -241,17 +247,17 @@ wp<IBinder> ProcessState::getWeakProxyForHandle(int32_t handle)
 
     handle_entry* e = lookupHandleLocked(handle);
 
-    if (e != NULL) {        
-        // We need to create a new BpBinder if there isn't currently one, OR we
+    if (e != NULL) {
+        // We need to create a new BpHwBinder if there isn't currently one, OR we
         // are unable to acquire a weak reference on this current one.  The
-        // attemptIncWeak() is safe because we know the BpBinder destructor will always
+        // attemptIncWeak() is safe because we know the BpHwBinder destructor will always
         // call expungeHandle(), which acquires the same lock we are holding now.
         // We need to do this because there is a race condition between someone
-        // releasing a reference on this BpBinder, and a new reference on its handle
+        // releasing a reference on this BpHwBinder, and a new reference on its handle
         // arriving from the driver.
         IBinder* b = e->binder;
         if (b == NULL || !e->refs->attemptIncWeak(this)) {
-            b = new BpBinder(handle);
+            b = new BpHwBinder(handle);
             result = b;
             e->binder = b;
             if (b) e->refs = b->getWeakRefs();
@@ -267,10 +273,10 @@ wp<IBinder> ProcessState::getWeakProxyForHandle(int32_t handle)
 void ProcessState::expungeHandle(int32_t handle, IBinder* binder)
 {
     AutoMutex _l(mLock);
-    
+
     handle_entry* e = lookupHandleLocked(handle);
 
-    // This handle may have already been replaced with a new BpBinder
+    // This handle may have already been replaced with a new BpHwBinder
     // (if someone failed the AttemptIncWeak() above); we don't want
     // to overwrite it.
     if (e && e->binder == binder) e->binder = NULL;
@@ -331,7 +337,7 @@ static int open_driver()
             fd = -1;
         }
         if (result != 0 || vers != BINDER_CURRENT_PROTOCOL_VERSION) {
-            ALOGE("Binder driver protocol does not match user space protocol!");
+          ALOGE("Binder driver protocol(%d) does not match user space protocol(%d)!", vers, BINDER_CURRENT_PROTOCOL_VERSION);
             close(fd);
             fd = -1;
         }
@@ -386,6 +392,6 @@ ProcessState::~ProcessState()
     }
     mDriverFD = -1;
 }
-        
+
 }; // namespace hardware
 }; // namespace android

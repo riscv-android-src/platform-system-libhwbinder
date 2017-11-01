@@ -22,22 +22,13 @@
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
 #include <utils/String16.h>
-#include <utils/Vector.h>
-
-
-// linux/binder.h already defines this, but we can't just include it from there
-// because there are host builds that include this file.
-#ifndef B_PACK_CHARS
-#define B_PACK_CHARS(c1, c2, c3, c4) \
-    ((((c1)<<24)) | (((c2)<<16)) | (((c3)<<8)) | (c4))
-#endif  // B_PACK_CHARS
 
 // ---------------------------------------------------------------------------
 namespace android {
 namespace hardware {
 
-class BBinder;
-class BpBinder;
+class BHwBinder;
+class BpHwBinder;
 class IInterface;
 class Parcel;
 
@@ -54,43 +45,11 @@ public:
     using TransactCallback = std::function<void(Parcel&)>;
 
     enum {
-        /////////////////// User defined transactions
-        FIRST_CALL_TRANSACTION  = 0x00000001,
-        LAST_CALL_TRANSACTION   = 0x00efffff,
-        /////////////////// HIDL reserved
-        FIRST_HIDL_TRANSACTION  = 0x00f00000,
-        HIDL_DESCRIPTOR_CHAIN_TRANSACTION = FIRST_HIDL_TRANSACTION,
-        LAST_HIDL_TRANSACTION   = 0x00ffffff,
-
-        /////////////////// other reserved transactions
-        PING_TRANSACTION        = B_PACK_CHARS('_','P','N','G'),
-        DUMP_TRANSACTION        = B_PACK_CHARS('_','D','M','P'),
-        SHELL_COMMAND_TRANSACTION = B_PACK_CHARS('_','C','M','D'),
-        INTERFACE_TRANSACTION   = B_PACK_CHARS('_', 'N', 'T', 'F'),
-        SYSPROPS_TRANSACTION    = B_PACK_CHARS('_', 'S', 'P', 'R'),
-
         // Corresponds to TF_ONE_WAY -- an asynchronous call.
         FLAG_ONEWAY             = 0x00000001
     };
 
                           IBinder();
-
-    /**
-     * Check if this IBinder implements the interface named by
-     * @a descriptor.  If it does, the base pointer to it is returned,
-     * which you can safely static_cast<> to the concrete C++ interface.
-     */
-    virtual sp<IInterface>  queryLocalInterface(const String16& descriptor);
-
-    /**
-     * Return the canonical name of the interface provided by this IBinder
-     * object.
-     */
-    virtual const String16& getInterfaceDescriptor() const = 0;
-
-    virtual bool            isBinderAlive() const = 0;
-    virtual status_t        pingBinder() = 0;
-    virtual status_t        dump(int fd, const Vector<String16>& args) = 0;
 
     virtual status_t        transact(   uint32_t code,
                                         const Parcel& data,
@@ -153,8 +112,8 @@ public:
     virtual void*           findObject(const void* objectID) const = 0;
     virtual void            detachObject(const void* objectID) = 0;
 
-    virtual BBinder*        localBinder();
-    virtual BpBinder*       remoteBinder();
+    virtual BHwBinder*        localBinder();
+    virtual BpHwBinder*       remoteBinder();
 
 protected:
     virtual          ~IBinder();

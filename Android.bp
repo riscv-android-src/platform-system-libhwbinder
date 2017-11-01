@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+subdirs = [
+    "vts/performance",
+]
+
 cc_library_shared {
     name: "libhwbinder",
     shared_libs: [
@@ -25,15 +29,20 @@ cc_library_shared {
         "libutils",
     ],
     export_include_dirs: ["include"],
-    local_include_dirs: ["include"],
+    include_dirs: ["frameworks/native/include"],
 
+    vendor_available: true,
+    vndk: {
+        enabled: true,
+        support_system_process: true,
+    },
     clang: true,
     sanitize: {
         misc_undefined: ["integer"],
     },
     srcs: [
         "Binder.cpp",
-        "BpBinder.cpp",
+        "BpHwBinder.cpp",
         "BufferedTextOutput.cpp",
         "Debug.cpp",
         "IInterface.cpp",
@@ -50,5 +59,8 @@ cc_library_shared {
         },
     },
 
-    cflags: ["-Werror"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
 }

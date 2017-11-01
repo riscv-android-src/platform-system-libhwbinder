@@ -36,7 +36,6 @@ using android::String16;
 
 // libbinder:
 using android::getService;
-using android::BnInterface;
 using android::defaultServiceManager;
 using android::ProcessState;
 using android::binder::Status;
@@ -99,7 +98,6 @@ int main(int argc, char* argv []) {
         // Child, start benchmarks
         ::benchmark::RunSpecifiedBenchmarks();
     } else {
-        int stat;
         startServer();
         while (true) {
             int stat, retval;

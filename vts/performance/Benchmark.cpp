@@ -106,6 +106,8 @@ static void BM_sendVec_binderize(benchmark::State& state) {
 }
 
 int main(int argc, char* argv []) {
+    setenv("TREBLE_TESTING_OVERRIDE", "true", true);
+
     enum HwBinderMode {
         kBinderize = 0,
         kPassthrough = 1,
@@ -134,7 +136,6 @@ int main(int argc, char* argv []) {
         // Child, start benchmarks
         ::benchmark::RunSpecifiedBenchmarks();
     } else {
-        int stat;
         startServer();
         while (true) {
             int stat, retval;
