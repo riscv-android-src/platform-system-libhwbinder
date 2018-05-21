@@ -22,6 +22,8 @@
 #include <hwbinder/ProcessState.h>
 #include <utils/Vector.h>
 
+#include <functional>
+
 #if defined(_WIN32)
 typedef  int  uid_t;
 #endif
@@ -78,12 +80,10 @@ public:
 
     static  void                shutdown();
 
-    // Call this to disable switching threads to background scheduling when
-    // receiving incoming IPC calls.  This is specifically here for the
-    // Android system process, since it expects to have background apps calling
-    // in to it but doesn't want to acquire locks in its services while in
-    // the background.
+            // TODO(b/66905301): remove symbol
+private:
     static  void                disableBackgroundScheduling(bool disable);
+public:
 
             // Call blocks until the number of executing binder threads is less than
             // the maximum number of binder threads threads allowed for this process.
@@ -93,9 +93,15 @@ public:
             void                setTheContextObject(sp<BHwBinder> obj);
 
             bool                isLooperThread();
-private:
-                                IPCThreadState();
-                                ~IPCThreadState();
+            bool                isOnlyBinderThread();
+
+            // Tasks which are done on the binder thread after the thread returns to the
+            // threadpool.
+            void addPostCommandTask(const std::function<void(void)>& task);
+
+           private:
+            IPCThreadState();
+            ~IPCThreadState();
 
             status_t            sendReply(const Parcel& reply, uint32_t flags);
             status_t            waitForResponse(Parcel *reply,
@@ -133,6 +139,9 @@ private:
             int32_t             mLastTransactionBinderFlags;
             sp<BHwBinder>         mContextObject;
             bool                mIsLooper;
+            bool mIsPollingThread;
+
+            std::vector<std::function<void(void)>> mPostCommandTasks;
 };
 
 }; // namespace hardware

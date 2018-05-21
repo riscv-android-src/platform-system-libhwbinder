@@ -23,6 +23,7 @@
 #include <hwbinder/TextOutput.h>
 #include <hwbinder/binder_kernel.h>
 
+#include <android-base/macros.h>
 #include <utils/Log.h>
 #include <utils/SystemClock.h>
 #include <utils/threads.h>
@@ -274,7 +275,6 @@ static pthread_mutex_t gTLSMutex = PTHREAD_MUTEX_INITIALIZER;
 static bool gHaveTLS = false;
 static pthread_key_t gTLS = 0;
 static bool gShutdown = false;
-static bool gDisableBackgroundScheduling = false;
 
 IPCThreadState* IPCThreadState::self()
 {
@@ -332,10 +332,8 @@ void IPCThreadState::shutdown()
     }
 }
 
-void IPCThreadState::disableBackgroundScheduling(bool disable)
-{
-    gDisableBackgroundScheduling = disable;
-}
+// TODO(b/66905301): remove symbol
+void IPCThreadState::disableBackgroundScheduling(bool /* disable */) {}
 
 sp<ProcessState> IPCThreadState::process()
 {
@@ -457,6 +455,16 @@ status_t IPCThreadState::getAndExecuteCommand()
         pthread_mutex_unlock(&mProcess->mThreadCountLock);
     }
 
+    if (UNLIKELY(!mPostCommandTasks.empty())) {
+        // make a copy in case the post transaction task makes a binder
+        // call and that other process calls back into us
+        std::vector<std::function<void(void)>> tasks = mPostCommandTasks;
+        mPostCommandTasks.clear();
+        for (auto func : tasks) {
+            func();
+        }
+    }
+
     return result;
 }
 
@@ -539,6 +547,7 @@ int IPCThreadState::setupPolling(int* fd)
     // as that won't work with polling. Also, the caller is responsible
     // for subsequently calling handlePolledCommands()
     mProcess->setThreadPoolConfiguration(1, true /* callerWillJoin */);
+    mIsPollingThread = true;
 
     mOut.writeInt32(BC_ENTER_LOOPER);
     *fd = mProcess->mDriverFD;
@@ -706,8 +715,9 @@ IPCThreadState::IPCThreadState()
     : mProcess(ProcessState::self()),
       mMyThreadId(gettid()),
       mStrictModePolicy(0),
-      mLastTransactionBinderFlags(0)
-{
+      mLastTransactionBinderFlags(0),
+      mIsLooper(false),
+      mIsPollingThread(false) {
     pthread_setspecific(gTLS, this);
     clearCaller();
     mIn.setDataCapacity(256);
@@ -967,6 +977,14 @@ void IPCThreadState::setTheContextObject(sp<BHwBinder> obj)
 bool IPCThreadState::isLooperThread()
 {
     return mIsLooper;
+}
+
+bool IPCThreadState::isOnlyBinderThread() {
+    return (mIsLooper && mProcess->mMaxThreads <= 1) || mIsPollingThread;
+}
+
+void IPCThreadState::addPostCommandTask(const std::function<void(void)>& task) {
+    mPostCommandTasks.push_back(task);
 }
 
 status_t IPCThreadState::executeCommand(int32_t cmd)
