@@ -17,6 +17,7 @@
 #define LOG_TAG "hw-IPCThreadState"
 
 #include <hwbinder/IPCThreadState.h>
+#include <binderthreadstate/IPCThreadStateBase.h>
 
 #include <hwbinder/Binder.h>
 #include <hwbinder/BpHwBinder.h>
@@ -24,6 +25,7 @@
 #include <hwbinder/binder_kernel.h>
 
 #include <android-base/macros.h>
+#include <utils/CallStack.h>
 #include <utils/Log.h>
 #include <utils/SystemClock.h>
 #include <utils/threads.h>
@@ -472,7 +474,7 @@ status_t IPCThreadState::getAndExecuteCommand()
         // call and that other process calls back into us
         std::vector<std::function<void(void)>> tasks = mPostCommandTasks;
         mPostCommandTasks.clear();
-        for (auto func : tasks) {
+        for (const auto& func : tasks) {
             func();
         }
     }
@@ -634,6 +636,16 @@ status_t IPCThreadState::transact(int32_t handle,
     }
 
     if ((flags & TF_ONE_WAY) == 0) {
+        if (UNLIKELY(mCallRestriction != ProcessState::CallRestriction::NONE)) {
+            if (mCallRestriction == ProcessState::CallRestriction::ERROR_IF_NOT_ONEWAY) {
+                ALOGE("Process making non-oneway call but is restricted.");
+                CallStack::logStack("non-oneway call", CallStack::getCurrent(10).get(),
+                    ANDROID_LOG_ERROR);
+            } else /* FATAL_IF_NOT_ONEWAY */ {
+                LOG_ALWAYS_FATAL("Process may not make oneway calls.");
+            }
+        }
+
         #if 0
         if (code == 4) { // relayout
             ALOGI(">>>>>> CALLING transaction 4");
@@ -756,7 +768,8 @@ IPCThreadState::IPCThreadState()
       mStrictModePolicy(0),
       mLastTransactionBinderFlags(0),
       mIsLooper(false),
-      mIsPollingThread(false) {
+      mIsPollingThread(false),
+      mCallRestriction(mProcess->mCallRestriction) {
     pthread_setspecific(gTLS, this);
     clearCaller();
     mIn.setDataCapacity(256);
@@ -764,6 +777,7 @@ IPCThreadState::IPCThreadState()
 
     // TODO(b/67742352): remove this variable from the class
     (void)mMyThreadId;
+    mIPCThreadStateBase = IPCThreadStateBase::self();
 }
 
 IPCThreadState::~IPCThreadState()
@@ -1114,6 +1128,9 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 "Not enough command data for brTRANSACTION");
             if (result != NO_ERROR) break;
 
+            // Record the fact that we're in a hwbinder call
+            mIPCThreadStateBase->pushCurrentState(
+                IPCThreadStateBase::CallState::HWBINDER);
             Parcel buffer;
             buffer.ipcSetDataReference(
                 reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
@@ -1177,6 +1194,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 error = mContextObject->transact(tr.code, buffer, &reply, tr.flags, reply_callback);
             }
 
+            mIPCThreadStateBase->popCurrentState();
             if ((tr.flags & TF_ONE_WAY) == 0) {
                 if (!reply_sent) {
                     // Should have been a reply but there wasn't, so there
@@ -1247,6 +1265,11 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
     }
 
     return result;
+}
+
+bool IPCThreadState::isServingCall() const
+{
+    return mIPCThreadStateBase->getCurrentBinderCallState() == IPCThreadStateBase::CallState::HWBINDER;
 }
 
 void IPCThreadState::threadDestructor(void *st)
