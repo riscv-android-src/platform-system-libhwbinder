@@ -33,6 +33,7 @@
 #include <private/binder/binder_module.h>
 #include <hwbinder/Static.h>
 
+#include <atomic>
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -88,7 +89,8 @@ static const char *kReturnStrings[] = {
     "BR_FINISHED",
     "BR_DEAD_BINDER",
     "BR_CLEAR_DEATH_NOTIFICATION_DONE",
-    "BR_FAILED_REPLY"
+    "BR_FAILED_REPLY",
+    "BR_TRANSACTION_SEC_CTX",
 };
 
 static const char *kCommandStrings[] = {
@@ -111,8 +113,9 @@ static const char *kCommandStrings[] = {
     "BC_DEAD_BINDER_DONE"
 };
 
-static const char* getReturnString(size_t idx)
+static const char* getReturnString(uint32_t cmd)
 {
+    size_t idx = cmd & _IOC_NRMASK;
     if (idx < sizeof(kReturnStrings) / sizeof(kReturnStrings[0]))
         return kReturnStrings[idx];
     else
@@ -274,13 +277,13 @@ static const void* printCommand(TextOutput& out, const void* _cmd)
 }
 
 static pthread_mutex_t gTLSMutex = PTHREAD_MUTEX_INITIALIZER;
-static bool gHaveTLS = false;
+static std::atomic<bool> gHaveTLS = false;
 static pthread_key_t gTLS = 0;
-static bool gShutdown = false;
+static std::atomic<bool> gShutdown = false;
 
 IPCThreadState* IPCThreadState::self()
 {
-    if (gHaveTLS) {
+    if (gHaveTLS.load(std::memory_order_acquire)) {
 restart:
         const pthread_key_t k = gTLS;
         IPCThreadState* st = (IPCThreadState*)pthread_getspecific(k);
@@ -288,13 +291,14 @@ restart:
         return new IPCThreadState;
     }
 
-    if (gShutdown) {
+    // Racey, heuristic test for simultaneous shutdown.
+    if (gShutdown.load(std::memory_order_relaxed)) {
         ALOGW("Calling IPCThreadState::self() during shutdown is dangerous, expect a crash.\n");
         return nullptr;
     }
 
     pthread_mutex_lock(&gTLSMutex);
-    if (!gHaveTLS) {
+    if (!gHaveTLS.load(std::memory_order_relaxed)) {
         int key_create_value = pthread_key_create(&gTLS, threadDestructor);
         if (key_create_value != 0) {
             pthread_mutex_unlock(&gTLSMutex);
@@ -302,7 +306,7 @@ restart:
                     strerror(key_create_value));
             return nullptr;
         }
-        gHaveTLS = true;
+        gHaveTLS.store(true, std::memory_order_release);
     }
     pthread_mutex_unlock(&gTLSMutex);
     goto restart;
@@ -310,7 +314,7 @@ restart:
 
 IPCThreadState* IPCThreadState::selfOrNull()
 {
-    if (gHaveTLS) {
+    if (gHaveTLS.load(std::memory_order_acquire)) {
         const pthread_key_t k = gTLS;
         IPCThreadState* st = (IPCThreadState*)pthread_getspecific(k);
         return st;
@@ -320,9 +324,9 @@ IPCThreadState* IPCThreadState::selfOrNull()
 
 void IPCThreadState::shutdown()
 {
-    gShutdown = true;
+    gShutdown.store(true, std::memory_order_relaxed);
 
-    if (gHaveTLS) {
+    if (gHaveTLS.load(std::memory_order_acquire)) {
         // XXX Need to wait for all thread pool threads to exit!
         IPCThreadState* st = (IPCThreadState*)pthread_getspecific(gTLS);
         if (st) {
@@ -330,7 +334,7 @@ void IPCThreadState::shutdown()
             pthread_setspecific(gTLS, nullptr);
         }
         pthread_key_delete(gTLS);
-        gHaveTLS = false;
+        gHaveTLS.store(false, std::memory_order_release);
     }
 }
 
@@ -354,6 +358,11 @@ pid_t IPCThreadState::getCallingPid() const
     return mCallingPid;
 }
 
+const char* IPCThreadState::getCallingSid() const
+{
+    return mCallingSid;
+}
+
 uid_t IPCThreadState::getCallingUid() const
 {
     return mCallingUid;
@@ -361,6 +370,7 @@ uid_t IPCThreadState::getCallingUid() const
 
 int64_t IPCThreadState::clearCallingIdentity()
 {
+    // ignore mCallingSid for legacy reasons
     int64_t token = ((int64_t)mCallingUid<<32) | mCallingPid;
     clearCaller();
     return token;
@@ -389,12 +399,14 @@ int32_t IPCThreadState::getLastTransactionBinderFlags() const
 void IPCThreadState::restoreCallingIdentity(int64_t token)
 {
     mCallingUid = (int)(token>>32);
+    mCallingSid = nullptr;  // not enough data to restore
     mCallingPid = (int)token;
 }
 
 void IPCThreadState::clearCaller()
 {
     mCallingPid = getpid();
+    mCallingSid = nullptr;  // expensive to lookup
     mCallingUid = getuid();
 }
 
@@ -726,7 +738,7 @@ status_t IPCThreadState::attemptIncStrongHandle(int32_t handle)
     waitForResponse(nullptr, &result);
 
 #if LOG_REFCOUNTS
-    printf("IPCThreadState::attemptIncStrongHandle(%ld) = %s\n",
+    ALOGV("IPCThreadState::attemptIncStrongHandle(%ld) = %s\n",
         handle, result == NO_ERROR ? "SUCCESS" : "FAILURE");
 #endif
 
@@ -741,7 +753,7 @@ status_t IPCThreadState::attemptIncStrongHandle(int32_t handle)
 void IPCThreadState::expungeHandle(int32_t handle, IBinder* binder)
 {
 #if LOG_REFCOUNTS
-    printf("IPCThreadState::expungeHandle(%ld)\n", handle);
+    ALOGV("IPCThreadState::expungeHandle(%ld)\n", handle);
 #endif
     self()->mProcess->expungeHandle(handle, binder);  // NOLINT
 }
@@ -764,7 +776,6 @@ status_t IPCThreadState::clearDeathNotification(int32_t handle, BpHwBinder* prox
 
 IPCThreadState::IPCThreadState()
     : mProcess(ProcessState::self()),
-      mMyThreadId(gettid()),
       mStrictModePolicy(0),
       mLastTransactionBinderFlags(0),
       mIsLooper(false),
@@ -775,8 +786,6 @@ IPCThreadState::IPCThreadState()
     mIn.setDataCapacity(256);
     mOut.setDataCapacity(256);
 
-    // TODO(b/67742352): remove this variable from the class
-    (void)mMyThreadId;
     mIPCThreadStateBase = IPCThreadStateBase::self();
 }
 
@@ -1024,9 +1033,11 @@ status_t IPCThreadState::writeTransactionData(int32_t cmd, uint32_t binderFlags,
     return NO_ERROR;
 }
 
+sp<BHwBinder> the_context_object;
+
 void IPCThreadState::setTheContextObject(sp<BHwBinder> obj)
 {
-    mContextObject = obj;
+    the_context_object = obj;
 }
 
 bool IPCThreadState::isLooperThread()
@@ -1120,10 +1131,19 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
         }
         break;
 
+    case BR_TRANSACTION_SEC_CTX:
     case BR_TRANSACTION:
         {
-            binder_transaction_data tr;
-            result = mIn.read(&tr, sizeof(tr));
+            binder_transaction_data_secctx tr_secctx;
+            binder_transaction_data& tr = tr_secctx.transaction_data;
+
+            if (cmd == (int) BR_TRANSACTION_SEC_CTX) {
+                result = mIn.read(&tr_secctx, sizeof(tr_secctx));
+            } else {
+                result = mIn.read(&tr, sizeof(tr));
+                tr_secctx.secctx = 0;
+            }
+
             ALOG_ASSERT(result == NO_ERROR,
                 "Not enough command data for brTRANSACTION");
             if (result != NO_ERROR) break;
@@ -1139,15 +1159,18 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 tr.offsets_size/sizeof(binder_size_t), freeBuffer, this);
 
             const pid_t origPid = mCallingPid;
+            const char* origSid = mCallingSid;
             const uid_t origUid = mCallingUid;
             const int32_t origStrictModePolicy = mStrictModePolicy;
             const int32_t origTransactionBinderFlags = mLastTransactionBinderFlags;
 
             mCallingPid = tr.sender_pid;
+            mCallingSid = reinterpret_cast<const char*>(tr_secctx.secctx);
             mCallingUid = tr.sender_euid;
             mLastTransactionBinderFlags = tr.flags;
 
-            //ALOGI(">>>> TRANSACT from pid %d uid %d\n", mCallingPid, mCallingUid);
+            // ALOGI(">>>> TRANSACT from pid %d sid %s uid %d\n", mCallingPid,
+            //    (mCallingSid ? mCallingSid : "<N/A>"), mCallingUid);
 
             Parcel reply;
             status_t error;
@@ -1191,7 +1214,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 }
 
             } else {
-                error = mContextObject->transact(tr.code, buffer, &reply, tr.flags, reply_callback);
+                error = the_context_object->transact(tr.code, buffer, &reply, tr.flags, reply_callback);
             }
 
             mIPCThreadStateBase->popCurrentState();
@@ -1212,11 +1235,11 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 // One-way transaction, don't care about return value or reply.
             }
 
-            //ALOGI("<<<< TRANSACT from pid %d restore pid %d uid %d\n",
-            //     mCallingPid, origPid, origUid);
-
+            //ALOGI("<<<< TRANSACT from pid %d restore pid %d sid %s uid %d\n",
+            //     mCallingPid, origPid, (origSid ? origSid : "<N/A>"), origUid);
 
             mCallingPid = origPid;
+            mCallingSid = origSid;
             mCallingUid = origUid;
             mStrictModePolicy = origStrictModePolicy;
             mLastTransactionBinderFlags = origTransactionBinderFlags;
@@ -1255,7 +1278,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
         break;
 
     default:
-        printf("*** BAD COMMAND %d received from Binder driver\n", cmd);
+        ALOGE("*** BAD COMMAND %d received from Binder driver\n", cmd);
         result = UNKNOWN_ERROR;
         break;
     }
