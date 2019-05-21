@@ -338,9 +338,6 @@ void IPCThreadState::shutdown()
     }
 }
 
-// TODO(b/66905301): remove symbol
-void IPCThreadState::disableBackgroundScheduling(bool /* disable */) {}
-
 sp<ProcessState> IPCThreadState::process()
 {
     return mProcess;
@@ -650,11 +647,11 @@ status_t IPCThreadState::transact(int32_t handle,
     if ((flags & TF_ONE_WAY) == 0) {
         if (UNLIKELY(mCallRestriction != ProcessState::CallRestriction::NONE)) {
             if (mCallRestriction == ProcessState::CallRestriction::ERROR_IF_NOT_ONEWAY) {
-                ALOGE("Process making non-oneway call but is restricted.");
+                ALOGE("Process making non-oneway call (code: %u) but is restricted.", code);
                 CallStack::logStack("non-oneway call", CallStack::getCurrent(10).get(),
                     ANDROID_LOG_ERROR);
             } else /* FATAL_IF_NOT_ONEWAY */ {
-                LOG_ALWAYS_FATAL("Process may not make oneway calls.");
+                LOG_ALWAYS_FATAL("Process may not make oneway calls (code: %u).", code);
             }
         }
 
@@ -1137,7 +1134,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
             binder_transaction_data_secctx tr_secctx;
             binder_transaction_data& tr = tr_secctx.transaction_data;
 
-            if (cmd == (int) BR_TRANSACTION_SEC_CTX) {
+            if (cmd == BR_TRANSACTION_SEC_CTX) {
                 result = mIn.read(&tr_secctx, sizeof(tr_secctx));
             } else {
                 result = mIn.read(&tr, sizeof(tr));
