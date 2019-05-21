@@ -33,6 +33,7 @@
 #include <private/binder/binder_module.h>
 #include <hwbinder/Static.h>
 
+#include <atomic>
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -114,7 +115,7 @@ static const char *kCommandStrings[] = {
 
 static const char* getReturnString(uint32_t cmd)
 {
-    size_t idx = cmd & 0xff;
+    size_t idx = cmd & _IOC_NRMASK;
     if (idx < sizeof(kReturnStrings) / sizeof(kReturnStrings[0]))
         return kReturnStrings[idx];
     else
@@ -276,13 +277,13 @@ static const void* printCommand(TextOutput& out, const void* _cmd)
 }
 
 static pthread_mutex_t gTLSMutex = PTHREAD_MUTEX_INITIALIZER;
-static bool gHaveTLS = false;
+static std::atomic<bool> gHaveTLS = false;
 static pthread_key_t gTLS = 0;
-static bool gShutdown = false;
+static std::atomic<bool> gShutdown = false;
 
 IPCThreadState* IPCThreadState::self()
 {
-    if (gHaveTLS) {
+    if (gHaveTLS.load(std::memory_order_acquire)) {
 restart:
         const pthread_key_t k = gTLS;
         IPCThreadState* st = (IPCThreadState*)pthread_getspecific(k);
@@ -290,13 +291,14 @@ restart:
         return new IPCThreadState;
     }
 
-    if (gShutdown) {
+    // Racey, heuristic test for simultaneous shutdown.
+    if (gShutdown.load(std::memory_order_relaxed)) {
         ALOGW("Calling IPCThreadState::self() during shutdown is dangerous, expect a crash.\n");
         return nullptr;
     }
 
     pthread_mutex_lock(&gTLSMutex);
-    if (!gHaveTLS) {
+    if (!gHaveTLS.load(std::memory_order_relaxed)) {
         int key_create_value = pthread_key_create(&gTLS, threadDestructor);
         if (key_create_value != 0) {
             pthread_mutex_unlock(&gTLSMutex);
@@ -304,7 +306,7 @@ restart:
                     strerror(key_create_value));
             return nullptr;
         }
-        gHaveTLS = true;
+        gHaveTLS.store(true, std::memory_order_release);
     }
     pthread_mutex_unlock(&gTLSMutex);
     goto restart;
@@ -312,7 +314,7 @@ restart:
 
 IPCThreadState* IPCThreadState::selfOrNull()
 {
-    if (gHaveTLS) {
+    if (gHaveTLS.load(std::memory_order_acquire)) {
         const pthread_key_t k = gTLS;
         IPCThreadState* st = (IPCThreadState*)pthread_getspecific(k);
         return st;
@@ -322,9 +324,9 @@ IPCThreadState* IPCThreadState::selfOrNull()
 
 void IPCThreadState::shutdown()
 {
-    gShutdown = true;
+    gShutdown.store(true, std::memory_order_relaxed);
 
-    if (gHaveTLS) {
+    if (gHaveTLS.load(std::memory_order_acquire)) {
         // XXX Need to wait for all thread pool threads to exit!
         IPCThreadState* st = (IPCThreadState*)pthread_getspecific(gTLS);
         if (st) {
@@ -332,12 +334,9 @@ void IPCThreadState::shutdown()
             pthread_setspecific(gTLS, nullptr);
         }
         pthread_key_delete(gTLS);
-        gHaveTLS = false;
+        gHaveTLS.store(false, std::memory_order_release);
     }
 }
-
-// TODO(b/66905301): remove symbol
-void IPCThreadState::disableBackgroundScheduling(bool /* disable */) {}
 
 sp<ProcessState> IPCThreadState::process()
 {
@@ -648,11 +647,11 @@ status_t IPCThreadState::transact(int32_t handle,
     if ((flags & TF_ONE_WAY) == 0) {
         if (UNLIKELY(mCallRestriction != ProcessState::CallRestriction::NONE)) {
             if (mCallRestriction == ProcessState::CallRestriction::ERROR_IF_NOT_ONEWAY) {
-                ALOGE("Process making non-oneway call but is restricted.");
+                ALOGE("Process making non-oneway call (code: %u) but is restricted.", code);
                 CallStack::logStack("non-oneway call", CallStack::getCurrent(10).get(),
                     ANDROID_LOG_ERROR);
             } else /* FATAL_IF_NOT_ONEWAY */ {
-                LOG_ALWAYS_FATAL("Process may not make oneway calls.");
+                LOG_ALWAYS_FATAL("Process may not make oneway calls (code: %u).", code);
             }
         }
 
@@ -1135,7 +1134,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
             binder_transaction_data_secctx tr_secctx;
             binder_transaction_data& tr = tr_secctx.transaction_data;
 
-            if (cmd == (int) BR_TRANSACTION_SEC_CTX) {
+            if (cmd == BR_TRANSACTION_SEC_CTX) {
                 result = mIn.read(&tr_secctx, sizeof(tr_secctx));
             } else {
                 result = mIn.read(&tr, sizeof(tr));
