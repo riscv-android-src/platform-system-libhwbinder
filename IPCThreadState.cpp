@@ -22,7 +22,6 @@
 #include <hwbinder/Binder.h>
 #include <hwbinder/BpHwBinder.h>
 #include <hwbinder/TextOutput.h>
-#include <hwbinder/binder_kernel.h>
 
 #include <android-base/macros.h>
 #include <utils/CallStack.h>
@@ -30,14 +29,14 @@
 #include <utils/SystemClock.h>
 #include <utils/threads.h>
 
-#include <private/binder/binder_module.h>
+#include "binder_kernel.h"
 #include <hwbinder/Static.h>
 
 #include <atomic>
 #include <errno.h>
 #include <inttypes.h>
+#include <linux/sched.h>
 #include <pthread.h>
-#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
@@ -561,9 +560,8 @@ void IPCThreadState::joinThreadPool(bool isMain)
         result = getAndExecuteCommand();
 
         if (result < NO_ERROR && result != TIMED_OUT && result != -ECONNREFUSED && result != -EBADF) {
-            ALOGE("getAndExecuteCommand(fd=%d) returned unexpected error %d, aborting",
+            LOG_ALWAYS_FATAL("getAndExecuteCommand(fd=%d) returned unexpected error %d, aborting",
                   mProcess->mDriverFD, result);
-            abort();
         }
 
         // Let this thread exit the thread pool if it is no longer
@@ -1323,5 +1321,5 @@ void IPCThreadState::freeBuffer(Parcel* parcel, const uint8_t* data,
     state->mOut.writePointer((uintptr_t)data);
 }
 
-}; // namespace hardware
-}; // namespace android
+} // namespace hardware
+} // namespace android

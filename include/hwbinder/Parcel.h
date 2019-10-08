@@ -25,15 +25,22 @@
 #include <utils/RefBase.h>
 #include <utils/String16.h>
 
-#include <linux/android/binder.h>
-
 #include <hwbinder/IInterface.h>
 
 struct binder_buffer_object;
+struct flat_binder_object;
 
 // ---------------------------------------------------------------------------
 namespace android {
 namespace hardware {
+
+#ifdef BINDER_IPC_32BIT
+typedef unsigned int binder_size_t;
+typedef unsigned int binder_uintptr_t;
+#else
+typedef unsigned long long binder_size_t;
+typedef unsigned long long binder_uintptr_t;
+#endif
 
 class IBinder;
 class IPCThreadState;
@@ -315,8 +322,8 @@ status_t unflatten_binder(const sp<ProcessState>& proc,
 status_t unflatten_binder(const sp<ProcessState>& proc,
                           const flat_binder_object& flat, wp<IBinder>* out);
 
-}; // namespace hardware
-}; // namespace android
+} // namespace hardware
+} // namespace android
 
 // ---------------------------------------------------------------------------
 
