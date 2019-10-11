@@ -21,12 +21,11 @@
 #include <cutils/atomic.h>
 #include <hwbinder/BpHwBinder.h>
 #include <hwbinder/IPCThreadState.h>
-#include <hwbinder/binder_kernel.h>
 #include <utils/Log.h>
 #include <utils/String8.h>
 #include <utils/threads.h>
 
-#include <private/binder/binder_module.h>
+#include "binder_kernel.h"
 #include <hwbinder/Static.h>
 
 #include <errno.h>
@@ -249,7 +248,8 @@ size_t ProcessState::getMmapSize() {
 }
 
 void ProcessState::setCallRestriction(CallRestriction restriction) {
-    LOG_ALWAYS_FATAL_IF(IPCThreadState::selfOrNull(), "Call restrictions must be set before the threadpool is started.");
+    LOG_ALWAYS_FATAL_IF(IPCThreadState::selfOrNull() != nullptr,
+        "Call restrictions must be set before the threadpool is started.");
 
     mCallRestriction = restriction;
 }
@@ -470,5 +470,5 @@ ProcessState::~ProcessState()
     mDriverFD = -1;
 }
 
-}; // namespace hardware
-}; // namespace android
+} // namespace hardware
+} // namespace android

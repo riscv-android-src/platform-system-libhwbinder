@@ -36,7 +36,6 @@
 #include <hwbinder/Parcel.h>
 #include <hwbinder/ProcessState.h>
 #include <hwbinder/TextOutput.h>
-#include <hwbinder/binder_kernel.h>
 
 #include <cutils/ashmem.h>
 #include <utils/Debug.h>
@@ -45,7 +44,7 @@
 #include <utils/String8.h>
 #include <utils/String16.h>
 
-#include <private/binder/binder_module.h>
+#include "binder_kernel.h"
 #include <hwbinder/Static.h>
 
 #ifndef INT32_MAX
@@ -67,8 +66,8 @@
 #define PAD_SIZE_UNSAFE(s) (((s)+3)&~3)
 
 static size_t pad_size(size_t s) {
-    if (s > (SIZE_T_MAX - 3)) {
-        abort();
+    if (s > (std::numeric_limits<size_t>::max() - 3)) {
+        LOG_ALWAYS_FATAL("pad size too big %zu", s);
     }
     return PAD_SIZE_UNSAFE(s);
 }
@@ -293,7 +292,7 @@ size_t Parcel::dataAvail() const
 {
     size_t result = dataSize() - dataPosition();
     if (result > INT32_MAX) {
-        abort();
+        LOG_ALWAYS_FATAL("result too big: %zu", result);
     }
     return result;
 }
@@ -330,7 +329,7 @@ void Parcel::setDataPosition(size_t pos) const
     if (pos > INT32_MAX) {
         // don't accept size_t values which may have come from an
         // inadvertent conversion from a negative int.
-        abort();
+        LOG_ALWAYS_FATAL("pos too big: %zu", pos);
     }
 
     mDataPos = pos;
@@ -376,11 +375,11 @@ status_t Parcel::writeInterfaceToken(const char* interface)
 bool Parcel::enforceInterface(const char* interface) const
 {
     const char* str = readCString();
-    if (strcmp(str, interface) == 0) {
+    if (str != nullptr && strcmp(str, interface) == 0) {
         return true;
     } else {
         ALOGW("**** enforceInterface() expected '%s' but read '%s'",
-                String8(interface).string(), String8(str).string());
+                interface, (str ? str : "<empty string>"));
         return false;
     }
 }
@@ -738,9 +737,9 @@ status_t Parcel::writeEmbeddedBuffer(
         return BAD_VALUE;
     binder_buffer_object obj = {
         .hdr = { .type = BINDER_TYPE_PTR },
+        .flags = BINDER_BUFFER_FLAG_HAS_PARENT,
         .buffer = reinterpret_cast<binder_uintptr_t>(buffer),
         .length = length,
-        .flags = BINDER_BUFFER_FLAG_HAS_PARENT,
         .parent = parent_buffer_handle,
         .parent_offset = parent_offset,
     };
@@ -757,9 +756,9 @@ status_t Parcel::writeBuffer(const void *buffer, size_t length, size_t *handle)
         buffer, length, mObjectsSize);
     binder_buffer_object obj {
         .hdr = { .type = BINDER_TYPE_PTR },
+        .flags = 0,
         .buffer = reinterpret_cast<binder_uintptr_t>(buffer),
         .length = length,
-        .flags = 0,
     };
     if (handle != nullptr) {
         // We use an index into mObjects as a handle
@@ -1984,5 +1983,5 @@ void Parcel::scanForFds() const
     mFdsKnown = true;
 }
 
-}; // namespace hardware
-}; // namespace android
+} // namespace hardware
+} // namespace android
