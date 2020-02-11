@@ -454,9 +454,10 @@ ProcessState::ProcessState(size_t mmap_size)
             mDriverFD = -1;
         }
     }
-    else {
-        ALOGE("Binder driver could not be opened.  Terminating.");
-    }
+
+#ifdef __ANDROID__
+    LOG_ALWAYS_FATAL_IF(mDriverFD < 0, "Binder driver could not be opened. Terminating.");
+#endif
 }
 
 ProcessState::~ProcessState()
