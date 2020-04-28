@@ -17,11 +17,6 @@
 #ifndef ANDROID_HARDWARE_BINDER_KERNEL_H
 #define ANDROID_HARDWARE_BINDER_KERNEL_H
 
-// TODO(b/31559095): bionic on host
-#ifndef __ANDROID__
-#define __packed __attribute__((__packed__))
-#endif
-
 #include <linux/android/binder.h>
 
 /**
@@ -30,6 +25,10 @@
  * have made it upstream yet. Therefore, the modifications to the
  * binder header are added locally in this file.
  */
+
+enum {
+	BINDER_BUFFER_FLAG_REF          = 1U << 1,
+};
 
 enum {
         FLAT_BINDER_FLAG_SCHEDPOLICY_MASK = 0x600,
