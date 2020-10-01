@@ -37,7 +37,6 @@
 #include <hwbinder/ProcessState.h>
 
 #include <cutils/ashmem.h>
-#include <utils/Debug.h>
 #include <utils/Log.h>
 #include <utils/misc.h>
 #include <utils/String8.h>
@@ -465,7 +464,7 @@ void* Parcel::writeInplace(size_t len)
 
     const size_t padded = pad_size(len);
 
-    // sanity check for integer overflow
+    // validate for integer overflow
     if (mDataPos+padded < mDataPos) {
         return nullptr;
     }
@@ -922,7 +921,7 @@ const void* Parcel::readInplace(size_t len) const
 
 template<class T>
 status_t Parcel::readAligned(T *pArg) const {
-    COMPILE_TIME_ASSERT_FUNCTION_SCOPE(PAD_SIZE_UNSAFE(sizeof(T)) == sizeof(T));
+    static_assert(PAD_SIZE_UNSAFE(sizeof(T)) == sizeof(T));
 
     if ((mDataPos+sizeof(T)) <= mDataSize) {
         const void* data = mData+mDataPos;
@@ -946,7 +945,7 @@ T Parcel::readAligned() const {
 
 template<class T>
 status_t Parcel::writeAligned(T val) {
-    COMPILE_TIME_ASSERT_FUNCTION_SCOPE(PAD_SIZE_UNSAFE(sizeof(T)) == sizeof(T));
+    static_assert(PAD_SIZE_UNSAFE(sizeof(T)) == sizeof(T));
 
     if ((mDataPos+sizeof(val)) <= mDataCapacity) {
 restart_write:
@@ -1445,6 +1444,12 @@ status_t Parcel::readNullableNativeHandleNoDup(const native_handle_t **handle,
         return status;
     }
 
+    if (*handle == nullptr) {
+        // null handle already read above
+        ALOGE("Expecting non-null handle buffer");
+        return BAD_VALUE;
+    }
+
     int numFds = (*handle)->numFds;
     int numInts = (*handle)->numInts;
 
@@ -1847,10 +1852,16 @@ status_t Parcel::continueWrite(size_t desired)
                 }
                 release_object(proc, *flat, this);
             }
-            binder_size_t* objects =
-                (binder_size_t*)realloc(mObjects, objectsSize*sizeof(binder_size_t));
-            if (objects) {
-                mObjects = objects;
+
+            if (objectsSize == 0) {
+                free(mObjects);
+                mObjects = nullptr;
+            } else {
+                binder_size_t* objects =
+                    (binder_size_t*)realloc(mObjects, objectsSize*sizeof(binder_size_t));
+                if (objects) {
+                    mObjects = objects;
+                }
             }
             mObjectsSize = objectsSize;
             mNextObjectHint = 0;
