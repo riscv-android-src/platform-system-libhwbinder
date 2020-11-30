@@ -421,18 +421,6 @@ void IPCThreadState::flushCommands()
     }
 }
 
-void IPCThreadState::blockUntilThreadAvailable()
-{
-    pthread_mutex_lock(&mProcess->mThreadCountLock);
-    while (mProcess->mExecutingThreadsCount >= mProcess->mMaxThreads) {
-        ALOGW("Waiting for thread to be free. mExecutingThreadsCount=%lu mMaxThreads=%lu\n",
-                static_cast<unsigned long>(mProcess->mExecutingThreadsCount),
-                static_cast<unsigned long>(mProcess->mMaxThreads));
-        pthread_cond_wait(&mProcess->mThreadCountDecrement, &mProcess->mThreadCountLock);
-    }
-    pthread_mutex_unlock(&mProcess->mThreadCountLock);
-}
-
 status_t IPCThreadState::getAndExecuteCommand()
 {
     status_t result;
@@ -472,7 +460,6 @@ status_t IPCThreadState::getAndExecuteCommand()
             }
             mProcess->mStarvationStartTimeMs = 0;
         }
-        pthread_cond_broadcast(&mProcess->mThreadCountDecrement);
         pthread_mutex_unlock(&mProcess->mThreadCountLock);
     }
 
@@ -1183,6 +1170,8 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                     << reinterpret_cast<const size_t*>(tr.data.ptr.offsets) << endl;
             }
 
+            constexpr size_t kForwardReplyFlags = TF_CLEAR_BUF;
+
             auto reply_callback = [&] (auto &replyParcel) {
                 if (reply_sent) {
                     // Reply was sent earlier, ignore it.
@@ -1192,7 +1181,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 reply_sent = true;
                 if ((tr.flags & TF_ONE_WAY) == 0) {
                     replyParcel.setError(NO_ERROR);
-                    sendReply(replyParcel, 0);
+                    sendReply(replyParcel, (tr.flags & kForwardReplyFlags));
                 } else {
                     ALOGE("Not sending reply in one-way transaction");
                 }
@@ -1219,7 +1208,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                     // Should have been a reply but there wasn't, so there
                     // must have been an error instead.
                     reply.setError(error);
-                    sendReply(reply, 0);
+                    sendReply(reply, (tr.flags & kForwardReplyFlags));
                 } else {
                     if (error != NO_ERROR) {
                         ALOGE("transact() returned error after sending reply.");
