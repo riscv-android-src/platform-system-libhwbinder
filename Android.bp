@@ -18,6 +18,7 @@ cc_library_headers {
     host_supported: true,
     recovery_available: true,
     vendor_available: true,
+    product_available: true,
     // TODO(b/153609531): remove when no longer needed.
     native_bridge_supported: true,
     apex_available: [
@@ -47,6 +48,7 @@ cc_defaults {
         "ProcessState.cpp",
         "Static.cpp",
         "TextOutput.cpp",
+        "Utils.cpp",
     ],
 
     product_variables: {
@@ -108,6 +110,7 @@ cc_library_static {
     host_supported: true,
     recovery_available: true,
     vendor_available: true,
+    product_available: true,
     // TODO(b/153609531): remove when no longer needed.
     native_bridge_supported: true,
     apex_available: [

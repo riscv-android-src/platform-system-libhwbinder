@@ -41,24 +41,11 @@ public:
     // with '0' as an argument, this is the same as selfOrNull
     static  sp<ProcessState>    initWithMmapSize(size_t mmapSize); // size in bytes
 
-            void                setContextObject(const sp<IBinder>& object);
-            sp<IBinder>         getContextObject(const sp<IBinder>& caller);
-
-            void                setContextObject(const sp<IBinder>& object,
-                                                 const String16& name);
-            sp<IBinder>         getContextObject(const String16& name,
-                                                 const sp<IBinder>& caller);
-
             void                startThreadPool();
 
-    typedef bool (*context_check_func)(const String16& name,
-                                       const sp<IBinder>& caller,
-                                       void* userData);
-
-            bool                isContextManager(void) const;
-            bool                becomeContextManager(
-                                    context_check_func checkFunc,
-                                    void* userData);
+            sp<IBinder>         getContextObject(const sp<IBinder>& /*caller*/);
+                                // only call once, without creating a pool
+            void                becomeContextManager();
 
             sp<IBinder>         getStrongProxyForHandle(int32_t handle);
             wp<IBinder>         getWeakProxyForHandle(int32_t handle);
@@ -114,7 +101,6 @@ private:
 
             // Protects thread count variable below.
             pthread_mutex_t     mThreadCountLock;
-            pthread_cond_t      mThreadCountDecrement;
             // Number of binder threads current executing a command.
             size_t              mExecutingThreadsCount;
             // Maximum number for binder threads allowed for this process.
@@ -125,14 +111,6 @@ private:
     mutable Mutex               mLock;  // protects everything below.
 
             Vector<handle_entry>mHandleToObject;
-
-            bool                mManagesContexts;
-            context_check_func  mBinderContextCheckFunc;
-            void*               mBinderContextUserData;
-
-            KeyedVector<String16, sp<IBinder> >
-                                mContexts;
-
 
             String8             mRootDir;
             bool                mThreadPoolStarted;
