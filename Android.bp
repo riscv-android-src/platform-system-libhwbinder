@@ -182,7 +182,7 @@ cc_defaults {
     target: {
         android: {
             lto: {
-                thin: true,
+                thin: false,
             },
         },
     },
